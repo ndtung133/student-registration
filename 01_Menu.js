@@ -9,6 +9,7 @@ function onOpen() {
     .addItem('Cài đặt / sửa chữa toàn bộ hệ thống', 'setupLabCleaningSystem')
     .addSeparator()
     .addItem('Mở đăng ký tuần này ngay', 'moDangKyTuanNayNgay')
+    .addItem('Áp dụng SV mới vào tuần hiện tại', 'apDungSinhVienMoiVaoTuanHienTai')
     .addItem('Khóa đăng ký ca', 'khoaDangKy')
     .addItem('Mở lại đăng ký ca', 'moLaiDangKy')
     .addSeparator()
@@ -165,6 +166,16 @@ function moDangKyTuanNayNgay() {
     logSystem_('INFO', 'moDangKyTuanNayNgay', 'Đã tạo lịch và mở đăng ký thủ công', 'Số SV=' + students.length);
     setActiveSheetSafe_(ss, LAB.SHEETS.REGISTER);
     toast_('Đã mở đăng ký cho ' + students.length + ' SV. Mỗi bạn tự chọn tên của mình; mỗi tên chỉ được một ca, không đối chiếu email.', 'Đã mở đăng ký', 10);
+  });
+}
+function apDungSinhVienMoiVaoTuanHienTai() {
+  runManualAction_('apDungSinhVienMoiVaoTuanHienTai', function () {
+    const ss = getSpreadsheet_();
+    assertAdmin_(ss);
+
+    applyNewRosterStudentsToCurrentWeek_(ss);
+
+    setActiveSheetSafe_(ss, LAB.SHEETS.REGISTER);
   });
 }
 

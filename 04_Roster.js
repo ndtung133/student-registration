@@ -477,4 +477,352 @@ function hasAppliedRosterSnapshot_(ss) {
   return normalizeLabel_(sh.getRange('E2').getValue()) !== '' ||
     normalizeLabel_(sh.getRange('C2').getValue()) !== '';
 }
+function applyNewRosterStudentsToCurrentWeek_(ss) {
+  const validation = validateRoster_(ss, true);
 
+  if (!validation.valid) {
+    throw new Error(validation.message);
+  }
+
+  if (!hasAppliedRosterSnapshot_(ss)) {
+    throw new Error(
+      'Tuần hiện tại chưa có snapshot danh sách sinh viên. ' +
+      'Không thể áp dụng tăng thêm SV theo cách an toàn.'
+    );
+  }
+
+  if (getWeekMode_() !== LAB.MODE_REGULAR) {
+    throw new Error(
+      'Chức năng thêm SV giữa tuần hiện chỉ áp dụng cho tuần thường. ' +
+      'Tuần có tổng vệ sinh cần xử lý riêng để không thay đổi công việc đã đăng ký.'
+    );
+  }
+
+  const appliedStudents = getAppliedStudents_(ss);
+  const latestStudents = validation.students;
+
+  const latestMap = Object.create(null);
+  latestStudents.forEach(function (student) {
+    latestMap[canonicalLabel_(student.label)] = student;
+  });
+
+  const removedStudents = appliedStudents.filter(function (student) {
+    return !latestMap[canonicalLabel_(student.label)];
+  });
+
+  if (removedStudents.length > 0) {
+    throw new Error(
+      'Danh sách hiện tại có sinh viên đã bị xóa hoặc đổi tên: ' +
+      removedStudents.map(function (student) {
+        return student.label;
+      }).join(', ') +
+      '. Chức năng này chỉ dùng để THÊM sinh viên mới.'
+    );
+  }
+
+  const appliedMap = Object.create(null);
+  appliedStudents.forEach(function (student) {
+    appliedMap[canonicalLabel_(student.label)] = true;
+  });
+
+  const addedStudents = latestStudents.filter(function (student) {
+    return !appliedMap[canonicalLabel_(student.label)];
+  });
+
+  if (addedStudents.length === 0) {
+    toast_(
+      'Không có sinh viên mới cần áp dụng vào tuần hiện tại.',
+      'Không có thay đổi',
+      6
+    );
+    return;
+  }
+
+  const reg = ss.getSheetByName(LAB.SHEETS.REGISTER);
+  if (!reg) {
+    throw new Error('Không tìm thấy sheet ĐĂNG KÝ TRỰC.');
+  }
+
+  const oldCount = getRegisterRowCount_(reg);
+
+  if (oldCount !== appliedStudents.length) {
+    throw new Error(
+      'Số slot hiện tại (' + oldCount +
+      ') không khớp danh sách đang áp dụng (' +
+      appliedStudents.length +
+      '). Hãy kiểm tra hệ thống trước khi thêm SV.'
+    );
+  }
+
+  const monday = getRegisterWeekMonday_(ss);
+  if (!monday) {
+    throw new Error('Không xác định được tuần hiện tại.');
+  }
+
+  const newCount = latestStudents.length;
+
+  if (!confirm_(
+    'Áp dụng sinh viên mới?',
+    'Sẽ thêm ' + addedStudents.length +
+    ' sinh viên vào tuần hiện tại (' +
+    oldCount + ' → ' + newCount +
+    ' slot) và GIỮ NGUYÊN các đăng ký hiện có.\n\n' +
+    'Sinh viên mới: ' +
+    addedStudents.map(function (student) {
+      return student.label;
+    }).join(', ') +
+    '\n\nTiếp tục?'
+  )) {
+    return;
+  }
+
+  const expanded = buildExpandedRegisterRows_(
+    reg,
+    monday,
+    oldCount,
+    newCount
+  );
+
+  archiveCurrentWeek_(
+    ss,
+    'Ảnh chụp trước khi thêm SV vào tuần hiện tại',
+    true
+  );
+
+  ensureSheetSize_(
+    reg,
+    Math.max(newCount + 15, 40),
+    14
+  );
+
+  // Cập nhật snapshot SV được phép đăng ký trong tuần này.
+  refreshSystemStudentList_(ss, latestStudents, monday);
+
+  // Ghi lại bảng mở rộng nhưng giữ nguyên dữ liệu G:N
+  // của các slot đã tồn tại.
+  reg.getRange(
+    LAB.FIRST_REGISTER_ROW,
+    1,
+    newCount,
+    14
+  ).setValues(expanded);
+
+  reg.getRange(
+    LAB.FIRST_REGISTER_ROW,
+    LAB.COL.NGAY,
+    newCount,
+    1
+  ).setNumberFormat('dd/MM/yyyy');
+
+  reg.getRange(
+    LAB.FIRST_REGISTER_ROW,
+    LAB.COL.TIME_DANGKY,
+    newCount,
+    1
+  ).setNumberFormat('dd/MM/yyyy HH:mm');
+
+  reg.getRange(
+    LAB.FIRST_REGISTER_ROW,
+    LAB.COL.TIME_KIEMTRA,
+    newCount,
+    1
+  ).setNumberFormat('dd/MM/yyyy HH:mm');
+
+  // Khôi phục checkbox mà không làm mất trạng thái TRUE/FALSE cũ.
+  const checkboxRule = SpreadsheetApp
+    .newDataValidation()
+    .requireCheckbox()
+    .build();
+
+  reg.getRange(
+    LAB.FIRST_REGISTER_ROW,
+    LAB.COL.DA_TRUC,
+    newCount,
+    1
+  ).setDataValidation(checkboxRule);
+
+  applyRegisterValidation_(ss, newCount, newCount);
+  applyAlternatingDayColors_(reg, newCount);
+  applyRegisterConditionalFormatting_(reg, newCount);
+
+  reg.getRange(
+    5,
+    1,
+    newCount + 1,
+    14
+  ).setBorder(true, true, true, true, true, true);
+
+  setDocumentProperty_(LAB.PROP.ROSTER_HASH, validation.hash);
+  setDocumentProperty_(LAB.PROP.PENDING_ROSTER_HASH, '');
+  setDocumentProperty_(LAB.PROP.ROSTER_DIRTY, 'NO');
+
+  // Có thêm slot mới thì phải mở lại đăng ký.
+  setRegistrationFullLocked_(false);
+  setWorkflowPhase_(LAB.PHASE_REGISTRATION_OPEN);
+
+  // Cập nhật bảng cấu hình theo số SV mới.
+  buildConfigSheet_(ss, latestStudents);
+
+  const home = ss.getSheetByName(LAB.SHEETS.HOME);
+  if (home) {
+    home.getRange('B4').setValue(
+      newCount + ' sinh viên (đang áp dụng tuần này)'
+    );
+
+    home.getRange('B7').setValue(
+      getHomeScheduleText_(
+        getScheduleConfig_(newCount, getWeekMode_())
+      )
+    );
+  }
+
+  refreshAllStatuses_(ss, true);
+  applyAllProtections_(ss);
+
+  SpreadsheetApp.flush();
+
+  logSystem_(
+    'INFO',
+    'applyNewRosterStudentsToCurrentWeek',
+    'Đã thêm SV vào tuần hiện tại mà không reset đăng ký',
+    'SV cũ=' + oldCount +
+      '; SV mới=' + newCount +
+      '; thêm=' +
+      addedStudents.map(function (student) {
+        return student.label;
+      }).join(', ')
+  );
+
+  toast_(
+    'Đã thêm ' + addedStudents.length +
+    ' SV vào tuần hiện tại. Các đăng ký cũ được giữ nguyên.',
+    'Áp dụng thành công',
+    10
+  );
+}
+
+
+function buildExpandedRegisterRows_(reg, monday, oldCount, newCount) {
+  const oldRows = oldCount > 0
+    ? reg.getRange(
+        LAB.FIRST_REGISTER_ROW,
+        1,
+        oldCount,
+        14
+      ).getValues()
+    : [];
+
+  const mode = getWeekMode_();
+  const oldSchedule = getScheduleConfig_(oldCount, mode);
+  const newSchedule = getScheduleConfig_(newCount, mode);
+
+  const groups = Object.create(null);
+
+  oldRows.forEach(function (row) {
+    const key =
+      normalizeLabel_(row[LAB.COL.THU - 1]) +
+      '|' +
+      normalizeLabel_(row[LAB.COL.LAB - 1]);
+
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(row.slice());
+  });
+
+  // Kiểm tra cấu trúc cũ trước khi sửa bất kỳ dữ liệu nào.
+  oldSchedule.forEach(function (dayObj) {
+    [
+      ['Lab 4.04', dayObj.lab404],
+      ['Lab 4.03', dayObj.lab403],
+      ['Phòng phụ', dayObj.phongPhu]
+    ].forEach(function (entry) {
+      const key = dayObj.day + '|' + entry[0];
+      const actual = groups[key] ? groups[key].length : 0;
+      const expected = Number(entry[1] || 0);
+
+      if (actual !== expected) {
+        throw new Error(
+          'Cấu trúc lịch hiện tại không khớp tại ' +
+          dayObj.day + ' - ' + entry[0] +
+          ': có ' + actual +
+          ' dòng, dự kiến ' + expected + '.'
+        );
+      }
+    });
+  });
+
+  const rows = [];
+  let stt = 1;
+
+  newSchedule.forEach(function (dayObj) {
+    const date = addDays_(monday, dayObj.dayOffset);
+
+    [
+      ['Lab 4.04', dayObj.lab404],
+      ['Lab 4.03', dayObj.lab403],
+      ['Phòng phụ', dayObj.phongPhu]
+    ].forEach(function (entry) {
+      const labName = entry[0];
+      const count = Number(entry[1] || 0);
+      const key = dayObj.day + '|' + labName;
+      const existing = groups[key] || [];
+
+      if (existing.length > count) {
+        throw new Error(
+          'Không thể thu nhỏ nhóm ' +
+          dayObj.day + ' - ' + labName +
+          ' khi đang giữ đăng ký hiện tại.'
+        );
+      }
+
+      for (let position = 1; position <= count; position++) {
+        let row;
+
+        if (position <= existing.length) {
+          // Giữ nguyên tên SV, thời gian đăng ký, ghi chú,
+          // trạng thái hoàn thành và người kiểm tra.
+          row = existing[position - 1].slice();
+        } else {
+          // Chỉ những slot tăng thêm mới là dòng trống.
+          row = [
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            'Còn trống',
+            false,
+            '',
+            '',
+            ''
+          ];
+        }
+
+        row[LAB.COL.STT - 1] = stt++;
+        row[LAB.COL.THU - 1] = dayObj.day;
+        row[LAB.COL.NGAY - 1] = date;
+        row[LAB.COL.LAB - 1] = labName;
+
+        row[LAB.COL.VIEC - 1] =
+          getTaskByLab_(labName, position, count);
+
+        row[LAB.COL.VITRI - 1] =
+          getPositionNameByLab_(labName, position, count);
+
+        rows.push(row);
+      }
+    });
+  });
+
+  if (rows.length !== newCount) {
+    throw new Error(
+      'Lỗi tạo slot mới: tạo được ' +
+      rows.length + '/' + newCount + ' dòng.'
+    );
+  }
+
+  return rows;
+}
