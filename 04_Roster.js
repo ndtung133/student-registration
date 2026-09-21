@@ -701,8 +701,13 @@ function applyNewRosterStudentsToCurrentWeek_(ss) {
   );
 }
 
-
 function buildExpandedRegisterRows_(reg, monday, oldCount, newCount) {
+  if (newCount < oldCount) {
+    throw new Error(
+      'Chức năng này chỉ hỗ trợ thêm sinh viên, không hỗ trợ giảm số lượng.'
+    );
+  }
+
   const oldRows = oldCount > 0
     ? reg.getRange(
         LAB.FIRST_REGISTER_ROW,
@@ -716,7 +721,7 @@ function buildExpandedRegisterRows_(reg, monday, oldCount, newCount) {
   const oldSchedule = getScheduleConfig_(oldCount, mode);
   const newSchedule = getScheduleConfig_(newCount, mode);
 
-  const groups = Object.create(null);
+  const actualCounts = Object.create(null);
 
   oldRows.forEach(function (row) {
     const key =
@@ -724,11 +729,9 @@ function buildExpandedRegisterRows_(reg, monday, oldCount, newCount) {
       '|' +
       normalizeLabel_(row[LAB.COL.LAB - 1]);
 
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(row.slice());
+    actualCounts[key] = (actualCounts[key] || 0) + 1;
   });
 
-  // Kiểm tra cấu trúc cũ trước khi sửa bất kỳ dữ liệu nào.
   oldSchedule.forEach(function (dayObj) {
     [
       ['Lab 4.04', dayObj.lab404],
@@ -736,8 +739,8 @@ function buildExpandedRegisterRows_(reg, monday, oldCount, newCount) {
       ['Phòng phụ', dayObj.phongPhu]
     ].forEach(function (entry) {
       const key = dayObj.day + '|' + entry[0];
-      const actual = groups[key] ? groups[key].length : 0;
       const expected = Number(entry[1] || 0);
+      const actual = Number(actualCounts[key] || 0);
 
       if (actual !== expected) {
         throw new Error(
@@ -750,69 +753,52 @@ function buildExpandedRegisterRows_(reg, monday, oldCount, newCount) {
     });
   });
 
-  const rows = [];
-  let stt = 1;
+  // Giữ nguyên 100% các dòng đăng ký đang có.
+  const rows = oldRows.map(function (row) {
+    return row.slice();
+  });
 
-  newSchedule.forEach(function (dayObj) {
-    const date = addDays_(monday, dayObj.dayOffset);
+  let nextStt = oldCount + 1;
+
+  newSchedule.forEach(function (newDay, dayIndex) {
+    const oldDay = oldSchedule[dayIndex];
+    const date = addDays_(monday, newDay.dayOffset);
 
     [
-      ['Lab 4.04', dayObj.lab404],
-      ['Lab 4.03', dayObj.lab403],
-      ['Phòng phụ', dayObj.phongPhu]
+      ['Lab 4.04', oldDay.lab404, newDay.lab404],
+      ['Lab 4.03', oldDay.lab403, newDay.lab403],
+      ['Phòng phụ', oldDay.phongPhu, newDay.phongPhu]
     ].forEach(function (entry) {
       const labName = entry[0];
-      const count = Number(entry[1] || 0);
-      const key = dayObj.day + '|' + labName;
-      const existing = groups[key] || [];
+      const oldLabCount = Number(entry[1] || 0);
+      const newLabCount = Number(entry[2] || 0);
+      const addedCount = newLabCount - oldLabCount;
 
-      if (existing.length > count) {
+      if (addedCount < 0) {
         throw new Error(
-          'Không thể thu nhỏ nhóm ' +
-          dayObj.day + ' - ' + labName +
-          ' khi đang giữ đăng ký hiện tại.'
+          'Không thể giảm slot ' +
+          newDay.day + ' - ' + labName +
+          ' khi tuần đang chạy.'
         );
       }
 
-      for (let position = 1; position <= count; position++) {
-        let row;
-
-        if (position <= existing.length) {
-          // Giữ nguyên tên SV, thời gian đăng ký, ghi chú,
-          // trạng thái hoàn thành và người kiểm tra.
-          row = existing[position - 1].slice();
-        } else {
-          // Chỉ những slot tăng thêm mới là dòng trống.
-          row = [
-            '',
-            '',
-            '',
-            '',
-            '',
-            '',
-            '',
-            '',
-            '',
-            'Còn trống',
-            false,
-            '',
-            '',
-            ''
-          ];
-        }
-
-        row[LAB.COL.STT - 1] = stt++;
-        row[LAB.COL.THU - 1] = dayObj.day;
-        row[LAB.COL.NGAY - 1] = date;
-        row[LAB.COL.LAB - 1] = labName;
-
-        row[LAB.COL.VIEC - 1] =
-          getTaskByLab_(labName, position, count);
-
-        row[LAB.COL.VITRI - 1] =
-          getPositionNameByLab_(labName, position, count);
-
-        rows.push(row);
+      for (let extra = 1; extra <= addedCount; extra++) {
+        rows.push([
+          nextStt++,
+          newDay.day,
+          date,
+          labName,
+          labName + ' - Hỗ trợ vệ sinh bổ sung theo hướng dẫn cán bộ.',
+          'Vị trí bổ sung ' + extra,
+          '',
+          '',
+          '',
+          'Còn trống',
+          false,
+          '',
+          '',
+          ''
+        ]);
       }
     });
   });
